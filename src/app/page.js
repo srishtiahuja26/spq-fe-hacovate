@@ -1,62 +1,149 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { Line, Bar } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+} from "chart.js";
 
-/*
-  SolarPredictor (Home) component
-  - Fixed/updated:
-    • Debounced location search (300ms) to avoid spamming Nominatim
-    • AbortController to cancel previous requests
-    • Limited search to India (&countrycodes=in) and added an email param for Nominatim
-      (replace the email with your own to comply with the usage policy)
-    • Fixed duplicate input names/ids (surfaceArea / irradiance etc.)
-    • Numeric inputs are parsed to numbers before storing in state
-    • Clicking a suggestion stores location, lat, lon and address into formData
-    • Robust error handling and graceful empty states
-*/
+// Register Chart.js components
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
-const PredictedOutputChart = ({ data = [] }) => {
+const LineChart = ({ currentPowers = [], optimalPowers = [] }) => {
+  const data = {
+    labels: Array.from({ length: 24 }, (_, i) => `${i}:00`),
+    datasets: [
+      {
+        label: "Current Config",
+        data: currentPowers,
+        borderColor: "rgba(59, 130, 246, 1)",
+        backgroundColor: "rgba(59, 130, 246, 0.2)",
+        fill: false,
+        tension: 0.3,
+      },
+      {
+        label: "Optimal Config",
+        data: optimalPowers,
+        borderColor: "rgba(34, 197, 94, 1)",
+        backgroundColor: "rgba(34, 197, 94, 0.2)",
+        fill: false,
+        tension: 0.3,
+      },
+    ],
+  };
+
+  const options = {
+    responsive: true,
+    plugins: {
+      legend: { position: "top" },
+      title: { display: true, text: "Hourly Solar Power Prediction", color: "#e2e8f0" },
+    },
+    scales: {
+      x: { title: { display: true, text: "Hour of Day", color: "#e2e8f0" }, ticks: { color: "#e2e8f0" } },
+      y: { title: { display: true, text: "Power (W)", color: "#e2e8f0" }, ticks: { color: "#e2e8f0" }, beginAtZero: true },
+    },
+  };
+
   return (
-    <div className="w-full bg-slate-800 rounded-lg p-4 flex flex-col items-center justify-center h-64 text-slate-300">
-      <p className="text-xl font-bold mb-2">Predicted Solar Output</p>
-      <div className="h-48 w-full flex items-end justify-around">
-        {data.map((item, index) => (
-          <div
-            key={index}
-            className="w-8 rounded-t-full bg-blue-500 transition-all duration-500"
-            style={{ height: `${Math.max(4, Math.min(100, item.value))}%` }}
-            title={`${item.label}: ${item.value}`}
-          ></div>
-        ))}
-      </div>
-      <div className="flex w-full justify-around mt-2 text-sm text-slate-400">
-        {data.map((item, index) => (
-          <span key={index}>{item.label}</span>
-        ))}
-      </div>
+    <div className="w-full bg-slate-800 rounded-lg p-4">
+      <Line data={data} options={options} />
+    </div>
+  );
+};
+
+const BarChart = ({ currentKWh = 0, optimalKWh = 0 }) => {
+  const data = {
+    labels: ["Current", "Optimal"],
+    datasets: [
+      {
+        label: "Daily Output (kWh)",
+        data: [currentKWh, optimalKWh],
+        backgroundColor: ["rgba(59, 130, 246, 0.5)", "rgba(34, 197, 94, 0.5)"],
+        borderColor: ["rgba(59, 130, 246, 1)", "rgba(34, 197, 94, 1)"],
+        borderWidth: 1,
+      },
+    ],
+  };
+
+  const options = {
+    responsive: true,
+    plugins: {
+      legend: { position: "top" },
+      title: { display: true, text: "Daily Solar Output Comparison", color: "#e2e8f0" },
+    },
+    scales: {
+      y: { title: { display: true, text: "Daily kWh", color: "#e2e8f0" }, ticks: { color: "#e2e8f0" }, beginAtZero: true },
+      x: { ticks: { color: "#e2e8f0" } },
+    },
+  };
+
+  return (
+    <div className="w-full bg-slate-800 rounded-lg p-4">
+      <Bar data={data} options={options} />
     </div>
   );
 };
 
 export default function Home() {
+  function getDayOfYear(date = new Date()) {
+    const start = new Date(date.getFullYear(), 0, 0);
+    const diff = date - start;
+    const oneDay = 1000 * 60 * 60 * 24;
+    const day = Math.floor(diff / oneDay);
+    return day;
+  }
+  // Intermediate value: formData state for input fields and prediction
   const [formData, setFormData] = useState({
     location: "",
     panelCount: 1,
     tiltAngle: 30,
     azimuthAngle: 180,
-    surfaceArea: 0,
-    irradiance: 0,
-    // optional fields filled from suggestion
+    surfaceArea: 10,
     lat: null,
     lon: null,
     address: null,
+    temp: 25,
+    dewPoint: 20,
+    cloudCover: 0,
+    windSpeed: 0,
+    windDir: 0,
+    pressure: 1013,
+    albedo: 0.2,
+    dayOfYear: getDayOfYear(), // Calculate current day of year
   });
 
   const [predictedData, setPredictedData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [trainLoading, setTrainLoading] = useState(false);
+  const [trainStatus, setTrainStatus] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const locationInputRef = useRef(null);
   const abortControllerRef = useRef(null);
+
+  // Extend Date prototype to get day of year
+  Date.prototype.getDOY = function () {
+    const start = new Date(this.getFullYear(), 0, 0);
+    const diff = this - start;
+    const oneDay = 1000 * 60 * 60 * 24;
+    return Math.floor(diff / oneDay);
+  };
 
   // Debounced Nominatim search (limited to India)
   useEffect(() => {
@@ -68,12 +155,11 @@ export default function Home() {
     }
 
     const timer = setTimeout(() => {
-      // Abort any previous request
       if (abortControllerRef.current) {
         try {
           abortControllerRef.current.abort();
         } catch (e) {
-          // ignore
+          /* ignore */
         }
       }
 
@@ -82,7 +168,6 @@ export default function Home() {
 
       const fetchSuggestions = async () => {
         try {
-          // IMPORTANT: Replace the email param with your contact email as recommended by Nominatim
           const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=10&countrycodes=in&accept-language=en&q=${encodeURIComponent(
             q
           )}&email=srishtiahuja26@gmail.com`;
@@ -91,7 +176,6 @@ export default function Home() {
           if (!res.ok) throw new Error(`Nominatim responded with ${res.status}`);
 
           const data = await res.json();
-
           const mapped = (data || []).map((item) => ({
             label: item.display_name,
             lat: parseFloat(item.lat),
@@ -99,11 +183,10 @@ export default function Home() {
             address: item.address || {},
             type: item.type || "",
           }));
-          
 
           setSuggestions(mapped);
         } catch (err) {
-          if (err.name === "AbortError") return; // expected on cancel
+          if (err.name === "AbortError") return;
           console.error("Location fetch error:", err);
           setSuggestions([]);
         }
@@ -123,31 +206,41 @@ export default function Home() {
       }
     };
   }, [formData.location]);
-const [weather, setWeather] = useState(null);
 
-useEffect(() => {
-  if (!formData.lat || !formData.lon) return;
+  // Fetch weather data
+  const [weather, setWeather] = useState(null);
 
-  const fetchWeather = async () => {
-    try {
-      const res = await fetch(
-        `https://api.openweathermap.org/data/2.5/weather?lat=${formData.lat}&lon=${formData.lon}&units=metric&appid=05ba077ea73a3c44323afe605e16a4c9`
-      );
-      if (!res.ok) throw new Error("Failed to fetch weather");
-      const data = await res.json();
-      setWeather(data);
-    } catch (err) {
-      console.error(err);
-      setWeather(null);
-    }
-  };
+  useEffect(() => {
+    if (!formData.lat || !formData.lon) return;
 
-  fetchWeather();
-}, [formData.lat, formData.lon]);
+    const fetchWeather = async () => {
+      try {
+        const res = await fetch(
+          `https://api.openweathermap.org/data/2.5/weather?lat=${formData.lat}&lon=${formData.lon}&units=metric&appid=05ba077ea73a3c44323afe605e16a4c9`
+        );
+        if (!res.ok) throw new Error("Failed to fetch weather");
+        const data = await res.json();
+        setWeather(data);
+        setFormData((prev) => ({
+          ...prev,
+          temp: data.main.temp,
+          dewPoint: data.main.temp - 5, // Approximate dew point
+          cloudCover: data.clouds.all,
+          windSpeed: data.wind.speed,
+          windDir: data.wind.deg,
+          pressure: data.main.pressure,
+        }));
+      } catch (err) {
+        console.error(err);
+        setWeather(null);
+      }
+    };
+
+    fetchWeather();
+  }, [formData.lat, formData.lon]);
 
   const handleChange = (e) => {
     const { name, value, type } = e.target;
-
     setFormData((prev) => ({
       ...prev,
       [name]: type === "number" ? (value === "" ? "" : Number(value)) : value,
@@ -163,31 +256,80 @@ useEffect(() => {
       address: suggestion.address,
     }));
     setSuggestions([]);
-
-    // focus out of input after selecting suggestion
     if (locationInputRef.current) locationInputRef.current.blur();
   };
 
-  const handleSubmit = (e) => {
+  const handleTrain = async () => {
+    setTrainLoading(true);
+    setTrainStatus(null);
+    try {
+      const response = await fetch("http://127.0.0.1:8000/api/train/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setTrainStatus({ success: true, message: "Model trained successfully!", metrics: data.metrics });
+      } else {
+        setTrainStatus({ success: false, message: data.error || "Training failed." });
+      }
+    } catch (err) {
+      setTrainStatus({ success: false, message: "Error: " + err.message });
+    } finally {
+      setTrainLoading(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!formData.lat || !formData.lon) {
+      alert("Please select a valid location.");
+      return;
+    }
     setLoading(true);
 
-    // Example: simulate a server/ML call. In production replace with real API.
-    setTimeout(() => {
-      const simulatedData = Array.from({ length: 12 }).map((_, i) => ({
-        label: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][i],
-        value: Math.floor(Math.random() * 100) + 20,
-      }));
+    try {
+      const response = await fetch("http://localhost:8000/api/predict/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lat: formData.lat,
+          lon: formData.lon,
+          area: formData.surfaceArea,
+          tilt: formData.tiltAngle,
+          azimuth: formData.azimuthAngle,
+          temp: formData.temp,
+          dew_point: formData.dewPoint,
+          cloud_cover: formData.cloudCover,
+          wind_speed: formData.windSpeed,
+          wind_dir: formData.windDir,
+          pressure: formData.pressure,
+          albedo: formData.albedo,
+          day_of_year: formData.dayOfYear,
+        }),
+      });
+
+      if (!response.ok) throw new Error(`API responded with ${response.status}`);
+      const data = await response.json();
 
       setPredictedData({
-        chartData: simulatedData,
-        dailyTotal: (Math.random() * 50).toFixed(2),
-        optimalTilt: Math.floor(Math.random() * 30) + 15,
-        optimalAzimuth: Math.floor(Math.random() * 360),
-        optimalDailyTotal: (Math.random() * 50 + 10).toFixed(2),
+        current: {
+          dailyTotal: data.current.daily_kwh,
+          hourlyPowers: data.current.hourly_powers,
+        },
+        optimal: {
+          dailyTotal: data.optimal.daily_kwh,
+          tilt: data.optimal.tilt,
+          azimuth: data.optimal.azimuth,
+          hourlyPowers: data.optimal.hourly_powers || data.current.hourly_powers, // Fallback if optimal hourly not provided
+        },
       });
+    } catch (err) {
+      console.error("Prediction error:", err);
+      alert("Failed to fetch prediction: " + err.message);
+    } finally {
       setLoading(false);
-    }, 1200);
+    }
   };
 
   return (
@@ -198,20 +340,17 @@ useEffect(() => {
         </h1>
         <p className="text-lg sm:text-xl text-slate-400">Analyze and optimize your solar energy generation.</p>
       </header>
+
       {weather && (
-  <div className="bg-slate-950 p-6 rounded-lg shadow-inner mt-6">
-    <h3 className="text-xl font-bold text-sky-400 mb-4">
-      Current Weather
-    </h3>
-    <p className="text-slate-300">
-      📍 {weather.name}, {weather.sys.country}
-    </p>
-    <p className="text-slate-300">🌡 Temp: {weather.main.temp} °C</p>
-    <p className="text-slate-300">☁ Condition: {weather.weather[0].description}</p>
-    <p className="text-slate-300">💨 Wind: {weather.wind.speed} m/s</p>
-    <p className="text-slate-300">💧 Humidity: {weather.main.humidity}%</p>
-  </div>
-)}
+        <div className="bg-slate-950 p-6 rounded-lg shadow-inner mt-6">
+          <h3 className="text-xl font-bold text-sky-400 mb-4">Current Weather</h3>
+          <p className="text-slate-300">📍 {weather.name}, {weather.sys.country}</p>
+          <p className="text-slate-300">🌡 Temp: {weather.main.temp} °C</p>
+          <p className="text-slate-300">☁ Condition: {weather.weather[0].description}</p>
+          <p className="text-slate-300">💨 Wind: {weather.wind.speed} m/s</p>
+          <p className="text-slate-300">💧 Humidity: {weather.main.humidity}%</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-7xl mx-auto">
         {/* Input Form Section */}
@@ -231,12 +370,9 @@ useEffect(() => {
                 ref={locationInputRef}
                 autoComplete="off"
                 className="w-full bg-slate-800 text-slate-200 border border-slate-700 rounded-lg py-2 px-4 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
-                aria-autocomplete="list"
-                aria-expanded={suggestions.length > 0}
                 placeholder="Type city, area or locality"
                 required
               />
-
               {suggestions.length > 0 && (
                 <ul className="absolute z-10 w-full bg-slate-800 border border-slate-700 rounded-lg mt-1 max-h-48 overflow-y-auto">
                   {suggestions.map((s, index) => (
@@ -244,7 +380,6 @@ useEffect(() => {
                       key={`${s.lat}-${s.lon}-${index}`}
                       onClick={() => handleSuggestionClick(s)}
                       className="px-4 py-2 text-slate-200 hover:bg-slate-700 cursor-pointer transition-colors"
-                      role="option"
                     >
                       <div className="text-sm">{s.label}</div>
                       <div className="text-xs text-slate-400">
@@ -325,16 +460,17 @@ useEffect(() => {
               </div>
 
               <div>
-                <label htmlFor="irradiance" className="block text-sm font-medium text-slate-400 mb-2">
-                  Irradiance (kW/m²)
+                <label htmlFor="albedo" className="block text-sm font-medium text-slate-400 mb-2">
+                  Surface Albedo (0–1)
                 </label>
                 <input
                   type="number"
-                  id="irradiance"
-                  name="irradiance"
-                  value={formData.irradiance}
+                  id="albedo"
+                  name="albedo"
+                  value={formData.albedo}
                   onChange={handleChange}
                   min={0}
+                  max={1}
                   step="0.01"
                   className="w-full bg-slate-800 text-slate-200 border border-slate-700 rounded-lg py-2 px-4 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
                   required
@@ -342,14 +478,37 @@ useEffect(() => {
               </div>
             </div>
 
-            <button
-              type="submit"
-              className="w-full bg-gradient-to-r from-blue-500 to-sky-600 text-white font-bold py-3 px-6 rounded-lg shadow-lg hover:from-blue-600 hover:to-sky-700 transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900"
-              disabled={loading}
-            >
-              {loading ? "Predicting..." : "Get Prediction"}
-            </button>
+            <div className="flex gap-4">
+              <button
+                type="button"
+                onClick={handleTrain}
+                className="w-full bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-bold py-3 px-6 rounded-lg shadow-lg hover:from-purple-600 hover:to-indigo-700 transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-slate-900"
+                disabled={trainLoading}
+              >
+                {trainLoading ? "Training..." : "Train Model"}
+              </button>
+              <button
+                type="submit"
+                className="w-full bg-gradient-to-r from-blue-500 to-sky-600 text-white font-bold py-3 px-6 rounded-lg shadow-lg hover:from-blue-600 hover:to-sky-700 transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900"
+                disabled={loading}
+              >
+                {loading ? "Predicting..." : "Get Prediction"}
+              </button>
+            </div>
           </form>
+          {trainStatus && (
+            <div className={`mt-4 p-4 rounded-lg ${trainStatus.success ? "bg-green-950/50" : "bg-red-950/50"}`}>
+              <p className={trainStatus.success ? "text-green-400" : "text-red-400"}>{trainStatus.message}</p>
+              {trainStatus.metrics && (
+                <div className="mt-2 text-slate-300">
+                  <p>MSE: {trainStatus.metrics.MSE.toFixed(4)}</p>
+                  <p>RMSE: {trainStatus.metrics.RMSE.toFixed(4)} W</p>
+                  <p>MAE: {trainStatus.metrics.MAE.toFixed(4)} W</p>
+                  <p>R2: {trainStatus.metrics.R2.toFixed(4)}</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Prediction & Recommendations Section */}
@@ -359,8 +518,13 @@ useEffect(() => {
           {predictedData ? (
             <div className="space-y-6">
               <div className="bg-slate-950 p-6 rounded-lg shadow-inner">
-                <h3 className="text-xl font-bold text-sky-400 mb-4">Predicted Annual Output</h3>
-                <PredictedOutputChart data={predictedData.chartData} />
+                <h3 className="text-xl font-bold text-sky-400 mb-4">Hourly Solar Output</h3>
+                <LineChart currentPowers={predictedData.current.hourlyPowers} optimalPowers={predictedData.optimal.hourlyPowers} />
+              </div>
+
+              <div className="bg-slate-950 p-6 rounded-lg shadow-inner">
+                <h3 className="text-xl font-bold text-sky-400 mb-4">Daily Solar Output</h3>
+                <BarChart currentKWh={predictedData.current.dailyTotal} optimalKWh={predictedData.optimal.dailyTotal} />
               </div>
 
               <div className="bg-slate-950 p-6 rounded-lg shadow-inner">
@@ -368,21 +532,21 @@ useEffect(() => {
                 <p className="text-slate-300 mb-2">Based on your location, the optimal settings for your panels are:</p>
                 <ul className="list-disc list-inside space-y-1 text-slate-400">
                   <li>
-                    Optimal Tilt Angle: <span className="font-bold text-blue-400">{predictedData.optimalTilt}°</span>
+                    Optimal Tilt Angle: <span className="font-bold text-blue-400">{predictedData.optimal.tilt}°</span>
                   </li>
                   <li>
-                    Optimal Azimuth Angle: <span className="font-bold text-blue-400">{predictedData.optimalAzimuth}°</span>
+                    Optimal Azimuth Angle: <span className="font-bold text-blue-400">{predictedData.optimal.azimuth}°</span>
                   </li>
                 </ul>
 
                 <div className="mt-4 p-4 rounded-lg border-2 border-dashed border-sky-600 bg-sky-950/20">
                   <p className="text-sky-300">
                     Your current daily output prediction is{' '}
-                    <span className="font-bold text-xl text-blue-400">{predictedData.dailyTotal} kWh.</span>
+                    <span className="font-bold text-xl text-blue-400">{predictedData.current.dailyTotal.toFixed(2)} kWh.</span>
                   </p>
                   <p className="text-sky-300 mt-2">
                     By adjusting to the optimal angles, you could potentially increase your daily output to{' '}
-                    <span className="font-bold text-xl text-blue-400">{predictedData.optimalDailyTotal} kWh.</span>
+                    <span className="font-bold text-xl text-blue-400">{predictedData.optimal.dailyTotal.toFixed(2)} kWh.</span>
                   </p>
                 </div>
               </div>
@@ -400,7 +564,7 @@ useEffect(() => {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364 1.364-1.591 1.591M21 12h-2.25m-1.364 6.364-1.591-1.591M12 18.75V21m-6.364-1.364 1.591-1.591M3 12H5.25m1.364-6.364 1.591 1.591M12 12a2.25 2.25 0 1 0 0-4.5 2.25 2.25 0 0 0 0 4.5Z" />
               </svg>
               <p className="text-lg">Enter your details and click "Get Prediction" to see your solar output.</p>
-              <p className="mt-2 text-sm">This is a placeholder for your AI/ML model's output.</p>
+              <p className="mt-2 text-sm">Train the model first if not already done.</p>
             </div>
           )}
         </div>
